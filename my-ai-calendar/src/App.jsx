@@ -1,10 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import './index.css';
+import CalendarGrid from './components/CalendarGrid';
 
 // Firebase Imports
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously, onAuthStateChanged } from 'firebase/auth'; // Removed signInWithCustomToken as it's Canvas-specific
-import { getFirestore, collection, doc, setDoc, query, onSnapshot } from 'firebase/firestore';
+import { getFirestore, collection, doc, setDoc, query, onSnapshot, deleteDoc, updateDoc } from 'firebase/firestore';
 
 
 function App() {
@@ -26,6 +27,20 @@ function App() {
   const [mockCurrentLocationType, setMockCurrentLocationType] = useState('');
   // --- NEW STATE FOR PROACTIVE SUGGESTIONS ---
   const [proactiveSuggestion, setProactiveSuggestion] = useState(null);
+
+  // --- NEW STATE FOR EDITING ---
+  const [editingEvent, setEditingEvent] = useState(null); // Stores the event object currently being edited
+  // --- NEW STATE FOR MODAL FORM DATA ---
+  const [editFormData, setEditFormData] = useState({
+      title: '',
+      date: '',
+      time: '',
+      description: '',
+      locationType: ''
+  });
+  // --- NEW STATE FOR CALENDAR ---
+  const [selectedDate, setSelectedDate] = useState(new Date()); // Holds the currently selected date in the calendar
+  const [filteredEvents, setFilteredEvents] = useState([]); // Events for the selected date
 
 
   // --- Firebase Initialization and Authentication ---
@@ -171,6 +186,20 @@ function App() {
         setProactiveSuggestion(null); // No relevant suggestions
     }
   }, [mockCurrentLocationType, events]); // Dependencies: re-run when location or events change
+  // --- NEW: Filter events based on selectedDate ---
+useEffect(() => {
+    // Normalize selectedDate to start of day for comparison
+    const normalizedSelectedSelectedDate = new Date(selectedDate);
+    normalizedSelectedSelectedDate.setHours(0, 0, 0, 0);
+
+    const filtered = events.filter(event => {
+        const eventDate = new Date(event.date);
+        eventDate.setHours(0, 0, 0, 0); // Normalize event date to start of day
+
+        return eventDate.getTime() === normalizedSelectedSelectedDate.getTime();
+    });
+    setFilteredEvents(filtered);
+}, [events, selectedDate]);
 
 
 
@@ -382,6 +411,88 @@ function App() {
         }
     }
   };
+  const handleDeleteEvent = async (eventId) => {
+  if (!db || !userId) {
+    setError("Firebase is not initialized or user is not authenticated. Cannot delete event.");
+    return;
+  }
+
+  setIsLoading(true); // Can show loading if delete takes time
+  setError('');
+
+  try {
+    const eventsCollectionRef = collection(db, `users/${userId}/calendarEvents`);
+    const eventDocRef = doc(eventsCollectionRef, eventId); // Reference to the specific document
+    await deleteDoc(eventDocRef); // Use deleteDoc to remove it
+    console.log("Event successfully deleted:", eventId);
+    // Firestore's onSnapshot listener will automatically update the `events` state,
+    // so no need to manually remove from local state here.
+  } catch (deleteError) {
+    console.error("Error deleting event:", deleteError);
+    setError(`Failed to delete event: ${deleteError.message}`);
+  } finally {
+    setIsLoading(false); // End loading
+  }
+}
+
+// --- NEW: Function to open edit modal ---
+const handleEditEvent = (eventToEdit) => {
+    setEditingEvent(eventToEdit);
+    setEditFormData({
+        title: eventToEdit.title,
+        date: eventToEdit.date,
+        time: eventToEdit.time,
+        description: eventToEdit.description || '',
+        locationType: eventToEdit.locationType || ''
+    });
+};
+
+// --- NEW: Function to close edit modal ---
+const handleCloseEditModal = () => {
+    setEditingEvent(null);
+    setEditFormData({
+        title: '',
+        date: '',
+        time: '',
+        description: '',
+        locationType: ''
+    });
+    setError(''); // Clear any errors from the modal
+};
+
+// --- NEW: Function to update an event in Firestore ---
+const handleUpdateEvent = async () => {
+    if (!db || !userId || !editingEvent) {
+        setError("Firebase is not initialized, user is not authenticated, or no event selected for editing.");
+        return;
+    }
+    if (!editFormData.title || !editFormData.date || !editFormData.time) {
+        setError("Title, Date, and Time are required for an event.");
+        return;
+    }
+
+    setIsLoading(true); // Show loading state
+    setError('');
+
+    try {
+        const eventsCollectionRef = collection(db, `users/${userId}/calendarEvents`);
+        const eventDocRef = doc(eventsCollectionRef, editingEvent.id); // Reference to the specific document
+        await updateDoc(eventDocRef, {
+            title: editFormData.title,
+            date: editFormData.date,
+            time: editFormData.time,
+            description: editFormData.description,
+            locationType: editFormData.locationType
+        });
+        console.log("Event successfully updated:", editingEvent.id);
+        handleCloseEditModal(); // Close modal after successful update
+    } catch (updateError) {
+        console.error("Error updating event:", updateError);
+        setError(`Failed to update event: ${updateError.message}`);
+    } finally {
+        setIsLoading(false); // End loading
+    }
+};
 
 
   return (
@@ -485,25 +596,148 @@ function App() {
           </div>
         )}
 
-        {/* Events Display Section */}
-        <div className="mt-8 p-6 bg-blue-50 border-l-4 border-blue-500 text-blue-800 rounded-2xl shadow-inner">
-          <h2 className="font-bold text-xl sm:text-2xl mb-4">Your Upcoming Events:</h2>
-          {events.length === 0 ? (
-            <p className="text-gray-600">No events added yet. Start by describing one above!</p>
-          ) : (
-            <ul className="divide-y divide-blue-200">
-              {events.map((event) => (
-                <li key={event.id} className="py-3">
-                  <p className="font-semibold text-blue-900">{event.title}</p>
-                  <p className="text-sm text-gray-700">{event.date} at {event.time}</p>
-                  {event.description && <p className="text-xs text-gray-600 mt-1 italic">{event.description}</p>}
-                  {event.locationType && <p className="text-xs text-gray-500 mt-1">Location Type: {event.locationType}</p>}
-                </li>
-              ))}
-            </ul>
-          )}
+        {/* --- NEW: Calendar Grid Component --- */}
+        <div className="mt-8 p-6 bg-white-50 rounded-2xl shadow-inner border border-gray-200"> {/* Added border for visual separation */}
+            <CalendarGrid events={events} onSelectDate={setSelectedDate} />
         </div>
 
+        {/* --- NEW: Events for Selected Date Display --- */}
+        <div className="mt-8 p-6 bg-blue-50 border-l-4 border-blue-500 text-blue-800 rounded-2xl shadow-inner">
+            <h2 className="font-bold text-xl sm:text-2xl mb-4">Events for {selectedDate.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })}:</h2>
+            {filteredEvents.length === 0 ? (
+                <p className="text-gray-600">No events on this day.</p>
+            ) : (
+                <ul className="divide-y divide-blue-200">
+                    {filteredEvents.map((event) => (
+                        <li key={event.id} className="py-3 flex items-center justify-between">
+                            <div>
+                                <p className="font-semibold text-blue-900">{event.title}</p>
+                                <p className="text-sm text-gray-700">{event.time}</p> {/* Only time here now */}
+                                {event.description && <p className="text-xs text-gray-600 mt-1 italic">{event.description}</p>}
+                                {event.locationType && <p className="text-xs text-gray-500 mt-1">Location Type: {event.locationType}</p>}
+                            </div>
+                            <div className="flex space-x-2">
+                                <button
+                                    onClick={() => handleEditEvent(event)}
+                                    className="bg-indigo-500 hover:bg-indigo-600 text-white font-bold py-1 px-3 rounded-md text-sm focus:outline-none focus:shadow-outline transition duration-200 ease-in-out transform hover:scale-105"
+                                    disabled={isLoading}
+                                >
+                                    Edit
+                                </button>
+                                <button
+                                    onClick={() => handleDeleteEvent(event.id)}
+                                    className="bg-red-500 hover:bg-red-600 text-white font-bold py-1 px-3 rounded-md text-sm focus:outline-none focus:shadow-outline transition duration-200 ease-in-out transform hover:scale-105"
+                                    disabled={isLoading}
+                                >
+                                    Delete
+                                </button>
+                            </div>
+                        </li>
+                    ))}
+                </ul>
+            )}
+        </div>
+
+    {/* --- NEW: Edit Event Modal (Conditional Rendering) --- */}
+    {editingEvent && (
+      <div className="fixed inset-0 bg-gray-600 bg-opacity-50 flex items-center justify-center p-4 z-50">
+        <div className="bg-white p-8 rounded-3xl shadow-2xl w-full max-w-md">
+          <h2 className="text-2xl font-bold text-gray-900 mb-6 text-center">Edit Event</h2>
+
+          {/* Error display for modal */}
+          {error && (
+              <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded-xl relative mb-4" role="alert">
+                  <strong className="font-bold">Error!</strong>
+                  <span className="block sm:inline ml-2">{error}</span>
+              </div>
+          )}
+
+          <form onSubmit={(e) => { e.preventDefault(); handleUpdateEvent(); }}>
+            <div className="mb-4">
+              <label htmlFor="editTitle" className="block text-gray-700 text-sm font-bold mb-2">Title:</label>
+              <input
+                type="text"
+                id="editTitle"
+                className="shadow-sm appearance-none border border-gray-300 rounded-xl w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                value={editFormData.title}
+                onChange={(e) => setEditFormData({ ...editFormData, title: e.target.value })}
+                required
+              />
+            </div>
+            <div className="mb-4">
+              <label htmlFor="editDate" className="block text-gray-700 text-sm font-bold mb-2">Date (YYYY-MM-DD):</label>
+              <input
+                type="date" // Use type="date" for a date picker
+                id="editDate"
+                className="shadow-sm appearance-none border border-gray-300 rounded-xl w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                value={editFormData.date}
+                onChange={(e) => setEditFormData({ ...editFormData, date: e.target.value })}
+                required
+              />
+            </div>
+            <div className="mb-4">
+              <label htmlFor="editTime" className="block text-gray-700 text-sm font-bold mb-2">Time (HH:MM):</label>
+              <input
+                type="time" // Use type="time" for a time picker
+                id="editTime"
+                className="shadow-sm appearance-none border border-gray-300 rounded-xl w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                value={editFormData.time}
+                onChange={(e) => setEditFormData({ ...editFormData, time: e.target.value })}
+                required
+              />
+            </div>
+            <div className="mb-4">
+              <label htmlFor="editDescription" className="block text-gray-700 text-sm font-bold mb-2">Description:</label>
+              <textarea
+                id="editDescription"
+                className="shadow-sm appearance-none border border-gray-300 rounded-xl w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent resize-y"
+                rows="3"
+                value={editFormData.description}
+                onChange={(e) => setEditFormData({ ...editFormData, description: e.target.value })}
+              ></textarea>
+            </div>
+            <div className="mb-6">
+              <label htmlFor="editLocationType" className="block text-gray-700 text-sm font-bold mb-2">Location Type:</label>
+              <input
+                type="text"
+                id="editLocationType"
+                className="shadow-sm appearance-none border border-gray-300 rounded-xl w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                placeholder="e.g., supermarket, office"
+                value={editFormData.locationType}
+                onChange={(e) => setEditFormData({ ...editFormData, locationType: e.target.value })}
+              />
+            </div>
+            <div className="flex items-center justify-end space-x-4">
+              <button
+                type="button"
+                onClick={handleCloseEditModal}
+                className="bg-gray-300 hover:bg-gray-400 text-gray-800 font-bold py-2 px-4 rounded-xl focus:outline-none focus:shadow-outline transition duration-200 ease-in-out"
+                disabled={isLoading}
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2 px-4 rounded-xl focus:outline-none focus:shadow-outline transition duration-200 ease-in-out transform hover:scale-105"
+                disabled={isLoading}
+              >
+                {isLoading ? (
+                  <span className="flex items-center justify-center">
+                    <svg className="animate-spin h-4 w-4 mr-2 text-white" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                    </svg>
+                    Saving...
+                  </span>
+                ) : (
+                  'Save Changes'
+                )}
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+    )}
       </div>
     </div>
   );
