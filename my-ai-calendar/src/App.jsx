@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect,} from 'react';
 import './index.css';
 import CalendarGrid from './components/CalendarGrid';
 
@@ -519,116 +519,161 @@ const handleUpdateEvent = async () => {
 
     // Prepare current schedule context for the LLM
     const formattedEvents = events.map(event => (
-        `- ${event.title} on ${event.date} at ${event.time} (Description: ${event.description || 'N/A'}, Location Type: ${event.locationType || 'N/A'})`
-    )).join('\n');
+      `- ID: ${event.id}, Title: ${event.title}, Date: ${event.date}, Time: ${event.time}, Description: ${event.description || 'N/A'}, Location Type: ${event.locationType || 'N/A'}`
+  )).join('\n');
 
     const prompt = `
     You are an intelligent calendar optimization assistant.
-    I will provide you with my current schedule and a new request or change.
-    Your task is to suggest how to optimally adjust my schedule to accommodate the new request or utilize new free time.
+  I will provide you with my current schedule and a new request or change.
+  Your task is to analyze my current schedule and the new request/change, and then propose an optimal updated plan.
 
-    Analyze the current schedule, the new request/change, and propose an updated plan.
-    Focus on identifying which existing events might be moved, and where new tasks could fit.
-    If a specific event is mentioned as cancelled, suggest how to use that newly freed time effectively.
+  **Instructions for Generating Changes:**
+  1.  **Prioritize minimal disruption:** Try to fit new tasks without moving too many existing events.
+  2.  **Handle cancellations:** If a specific event is cancelled, suggest a "delete" action for that event.
+  3.  **Utilize freed time:** If time is freed up, suggest moving an *existing* relevant event into that slot, or adding a new general "focus time" event if no specific task is moved. Use the 'move' type for existing events, including their original 'eventId'.
+  4.  **Handle new urgent tasks/clashes:** If a new task conflicts with an existing event, suggest moving the *existing* event to accommodate the new one, especially if the new task is urgent or given a specific time. If an existing event needs to be moved, use its 'eventId' from 'My Current Schedule'.
+  5.  **Always provide 'eventId'**: For 'move' and 'delete' operations, you MUST include the 'eventId' corresponding to the event in 'My Current Schedule'.
+  6.  **Return actionable changes**: Each change must be one of 'add', 'move', or 'delete'.
 
-    Return your suggestions as a JSON object with an array of "suggestions". Each suggestion should include a "description" (natural language) and "changes" (an array of event modifications).
+  Return your suggestions as a JSON object with an array of "suggestions". Each suggestion should include a "description" (natural language summary) and "changes" (an array of event modifications).
 
-    Current Date: ${new Date().toISOString().slice(0, 10)}
-    Current Time: ${new Date().toTimeString().slice(0, 5)}
 
-    My Current Schedule (Upcoming Events):
-    ${formattedEvents.length > 0 ? formattedEvents : "No upcoming events."}
+  Current Date: ${new Date().toISOString().slice(0, 10)}
+  Current Time: ${new Date().toTimeString().slice(0, 5)}
 
-    New Request/Change: "${optimizationInput}"
+  My Current Schedule (Upcoming Events):
+  ${formattedEvents.length > 0 ? formattedEvents : "No upcoming events."}
 
-    Example Output (for "My 10 AM meeting got canceled"):
-    {
-      "suggestions": [
-        {
-          "description": "You now have a free slot from 10:00 to 11:00 AM. Consider moving your 'Deep Work' block.",
-          "changes": [
-            {
-              "type": "move",
-              "eventTitle": "Deep Work",
-              "oldTime": "14:00",
-              "newTime": "10:00"
-            }
-          ]
-        }
-      ]
-    }
+  New Request/Change: "${optimizationInput}"
 
-    Example Output (for "I need 2 hours for a new urgent report"):
-    {
-      "suggestions": [
-        {
-          "description": "To accommodate the urgent report, I suggest moving 'Lunch with Sarah' and adding 'Work on Report'.",
-          "changes": [
-            {
-              "type": "move",
-              "eventTitle": "Lunch with Sarah",
-              "oldTime": "12:00",
-              "newTime": "13:00"
-            },
-            {
-              "type": "add",
-              "eventDetails": {
-                "title": "Urgent Report",
-                "date": "${new Date().toISOString().slice(0, 10)}",
-                "time": "10:00",
-                "description": "Work on the urgent report",
-                "locationType": "office"
+  ---
+  **Example Scenarios and Expected Outputs:**
+
+  **Scenario 1: Meeting Cancellation & Filling Free Slot**
+  * User Input: "My meeting with client on Monday at 10 AM got canceled. Suggest something for that free time."
+  * Assume My Current Schedule includes: - ID: meeting_id_1, Title: "Meeting with client", Date: 2025-08-04, Time: 10:00, ... and - ID: deep_work_id_1, Title: "Deep work session", Date: 2025-08-04, Time: 14:00, ...
+  * Expected Output:
+      {
+        "suggestions": [
+          {
+            "description": "Your meeting with client on Monday, August 4th at 10:00 AM has been cancelled. I suggest moving your 'Deep work session' to fill this slot.",
+            "changes": [
+              {
+                "type": "delete",
+                "eventTitle": "Meeting with client",
+                "eventId": "meeting_id_1"
+              },
+              {
+                "type": "move",
+                "eventTitle": "Deep work session",
+                "eventId": "deep_work_id_1",
+                "oldTime": "14:00",
+                "newTime": "10:00"
               }
-            }
-          ]
-        }
-      ]
-    }
+            ]
+          }
+        ]
+      }
 
-    Please provide your optimal schedule suggestions based on the New Request/Change.
-    `;
-
-    // Define the JSON schema for the expected response from the LLM for optimization
-    const responseSchema = {
-        type: "OBJECT",
-        properties: {
-            suggestions: {
-                type: "ARRAY",
-                items: {
-                    type: "OBJECT",
-                    properties: {
-                        description: { "type": "STRING" },
-                        changes: {
-                            type: "ARRAY",
-                            items: {
-                                type: "OBJECT",
-                                properties: {
-                                    type: { "type": "STRING", "enum": ["add", "move", "delete"] },
-                                    eventTitle: { "type": "STRING" },
-                                    oldTime: { "type": "STRING", "pattern": "^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$" },
-                                    newTime: { "type": "STRING", "pattern": "^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$" },
-                                    eventDetails: { // For 'add' type changes
-                                        type: "OBJECT",
-                                        properties: {
-                                            title: { "type": "STRING" },
-                                            date: { "type": "STRING", "format": "date-time" },
-                                            time: { "type": "STRING", "pattern": "^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$" },
-                                            description: { "type": "STRING" },
-                                            locationType: { "type": "STRING" }
-                                        },
-                                        required: ["title", "date", "time"]
-                                    }
-                                },
-                                required: ["type", "eventTitle"]
-                            }
-                        }
-                    },
-                    required: ["description", "changes"]
+  **Scenario 2: New Urgent Task with Potential Clash**
+  * User Input: "I need to add an urgent report meeting tomorrow that will take 1 hour, try to fit it in before lunch."
+  * Assume "My Current Schedule" includes: '- ID: lunch_id_1, Title: "Lunch with Sarah", Date: 2025-07-30, Time: 12:00, ...'
+  * Expected Output (if it needs to move Lunch):
+      {
+        "suggestions": [
+          {
+            "description": "To fit the urgent report meeting, I suggest moving 'Lunch with Sarah' and adding the new report meeting at 11:00.",
+            "changes": [
+              {
+                "type": "add",
+                "eventDetails": {
+                  "title": "Urgent Report Meeting",
+                  "date": "2025-07-30",
+                  "time": "11:00",
+                  "description": "Prepare urgent report",
+                  "locationType": "office"
                 }
-            }
-        },
-        required: ["suggestions"]
-    };
+              },
+              {
+                "type": "move",
+                "eventTitle": "Lunch with Sarah",
+                "eventId": "lunch_id_1",
+                "oldTime": "12:00",
+                "newTime": "13:00"
+              }
+            ]
+          }
+        ]
+      }
+
+  **Scenario 3: New Task, No Clash, Fits Well**
+  * User Input: "Add a quick 30-minute call with Mike tomorrow morning."
+  * Assume 'My Current Schedule' has a free slot at 9:00 AM.
+  * Expected Output:
+      {
+        "suggestions": [
+          {
+            "description": "I found a free slot for your call with Mike tomorrow morning.",
+            "changes": [
+              {
+                "type": "add",
+                "eventDetails": {
+                  "title": "Call with Mike",
+                  "date": "2025-07-30",
+                  "time": "09:00",
+                  "description": "Quick sync",
+                  "locationType": "office"
+                }
+              }
+            ]
+          }
+        ]
+      }
+
+  Please provide your optimal schedule suggestions based on the New Request/Change.
+  `;
+  // Define the JSON schema for the expected response from the LLM for optimization
+  const responseSchema = {
+      type: "OBJECT",
+      properties: {
+          suggestions: {
+              type: "ARRAY",
+              items: {
+                  type: "OBJECT",
+                  properties: {
+                      description: { "type": "STRING" },
+                      changes: {
+                          type: "ARRAY",
+                          items: {
+                              type: "OBJECT",
+                              properties: {
+                                  type: { "type": "STRING", "enum": ["add", "move", "delete"] },
+                                  eventTitle: { "type": "STRING" },
+                                  eventId: { "type": "STRING" }, // <-- NEW: Add eventId for move/delete
+                                  oldTime: { "type": "STRING", "pattern": "^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$" },
+                                  newTime: { "type": "STRING", "pattern": "^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$" },
+                                  eventDetails: { // For 'add' type changes
+                                      type: "OBJECT",
+                                      properties: {
+                                          title: { "type": "STRING" },
+                                          date: { "type": "STRING" }, // Removed format: "date-time" from LLM parsing here
+                                          time: { "type": "STRING", "pattern": "^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$" },
+                                          description: { "type": "STRING" },
+                                          locationType: { "type": "STRING" }
+                                      },
+                                      required: ["title", "date", "time"]
+                                  }
+                              },
+                              required: ["type"] // Only type is always required initially; eventTitle/eventId for move/delete depends on type
+                          }
+                      }
+                  },
+                  required: ["description", "changes"]
+              }
+          }
+      },
+      required: ["suggestions"]
+  };
 
 
     const payload = {
@@ -698,6 +743,65 @@ const handleUpdateEvent = async () => {
         }
     }
   };
+
+  // --- NEW: Function to accept optimization suggestions ---
+const handleAcceptSuggestion = async (suggestionChanges) => {
+    if (!db || !userId) {
+        setError("Firebase not initialized or user not authenticated. Cannot apply changes.");
+        return;
+    }
+
+    setIsLoading(true); // Re-using isLoading for global operations
+    setError('');
+
+    try {
+        const eventsCollectionRef = collection(db, `users/${userId}/calendarEvents`);
+
+        for (const change of suggestionChanges) {
+            if (change.type === 'add' && change.eventDetails) {
+                // Add a new event
+                const newEventData = {
+                    title: change.eventDetails.title,
+                    date: change.eventDetails.date,
+                    time: change.eventDetails.time,
+                    description: change.eventDetails.description || '',
+                    locationType: change.eventDetails.locationType || ''
+                };
+                await setDoc(doc(eventsCollectionRef), newEventData);
+                console.log("Added new event:", newEventData.title);
+            } else if (change.type === 'move' && change.eventId && change.newTime) {
+                // Move (update time) of an existing event
+                const eventDocRef = doc(eventsCollectionRef, change.eventId);
+                await updateDoc(eventDocRef, { time: change.newTime });
+                console.log(`Moved event ${change.eventTitle} (ID: ${change.eventId}) to ${change.newTime}`);
+            } else if (change.type === 'delete' && change.eventId) {
+                // Delete an existing event
+                const eventDocRef = doc(eventsCollectionRef, change.eventId);
+                await deleteDoc(eventDocRef);
+                console.log(`Deleted event ${change.eventTitle} (ID: ${change.eventId})`);
+            } else {
+                console.warn("Unknown or incomplete change type received from LLM:", change);
+                // Optionally, show an error to the user for malformed suggestions
+            }
+        }
+        setOptimizedSuggestions(null); // Clear suggestions after applying
+        setOptimizationInput(''); // Clear input
+        console.log("Optimization suggestions applied successfully.");
+
+    } catch (applyError) {
+        console.error("Error applying optimization suggestions:", applyError);
+        setError(`Failed to apply optimization: ${applyError.message}`);
+    } finally {
+        setIsLoading(false);
+    }
+};
+
+// --- NEW: Function to ignore optimization suggestions ---
+const handleIgnoreSuggestion = () => {
+    setOptimizedSuggestions(null); // Clear suggestions
+    setOptimizationInput(''); // Clear input
+    console.log("Optimization suggestions ignored.");
+};
 
 
   return (
@@ -834,31 +938,43 @@ const handleUpdateEvent = async () => {
 
       {/* --- NEW: Optimized Suggestions Display --- */}
       {optimizedSuggestions && optimizedSuggestions.length > 0 && (
-        <div className="mt-6 bg-purple-50 border-l-4 border-purple-500 text-purple-800 p-4 rounded-xl shadow-inner">
-          <h2 className="font-bold text-lg mb-2">Optimization Suggestions:</h2>
-          {optimizedSuggestions.map((suggestion, index) => (
+    <div className="mt-6 bg-purple-50 border-l-4 border-purple-500 text-purple-800 p-4 rounded-xl shadow-inner">
+        <h2 className="font-bold text-lg mb-2">Optimization Suggestions:</h2>
+        {optimizedSuggestions.map((suggestion, index) => (
             <div key={index} className="mb-4 last:mb-0 p-3 bg-purple-100 rounded-lg">
-              <p className="mb-2 text-purple-900">{suggestion.description}</p>
-              {suggestion.changes && suggestion.changes.length > 0 && (
-                <ul className="list-disc list-inside text-sm text-purple-700">
-                  {suggestion.changes.map((change, changeIndex) => (
-                    <li key={changeIndex}>
-                      {change.type === 'add' && `Add: "${change.eventDetails.title}" on ${change.eventDetails.date} at ${change.eventDetails.time}`}
-                      {change.type === 'move' && `Move: "${change.eventTitle}" from ${change.oldTime} to ${change.newTime}`}
-                      {change.type === 'delete' && `Delete: "${change.eventTitle}"`}
-                    </li>
-                  ))}
-                </ul>
-              )}
-              {/* Action buttons (will implement logic later) */}
-              <div className="flex justify-end mt-3 space-x-2">
-                <button className="bg-purple-600 hover:bg-purple-700 text-white text-xs py-1 px-3 rounded-md transition duration-200" disabled>Accept</button>
-                <button className="bg-gray-400 hover:bg-gray-500 text-white text-xs py-1 px-3 rounded-md transition duration-200" disabled>Ignore</button>
-              </div>
+                <p className="mb-2 text-purple-900">{suggestion.description}</p>
+                {suggestion.changes && suggestion.changes.length > 0 && (
+                    <ul className="list-disc list-inside text-sm text-purple-700">
+                        {suggestion.changes.map((change, changeIndex) => (
+                            <li key={changeIndex}>
+                                {change.type === 'add' && `Add: "${change.eventDetails.title}" on ${change.eventDetails.date} at ${change.eventDetails.time}`}
+                                {change.type === 'move' && `Move: "${change.eventTitle}" from ${change.oldTime} to ${change.newTime}`}
+                                {change.type === 'delete' && `Delete: "${change.eventTitle}"`}
+                            </li>
+                        ))}
+                    </ul>
+                )}
+                <div className="flex justify-end mt-3 space-x-2">
+                    {/* --- ENABLED AND CONNECTED BUTTONS --- */}
+                    <button
+                        onClick={() => handleAcceptSuggestion(suggestion.changes)}
+                        className="bg-purple-600 hover:bg-purple-700 text-white text-xs py-1 px-3 rounded-md transition duration-200"
+                        disabled={isLoading} // Use global isLoading for all major actions
+                    >
+                        Accept
+                    </button>
+                    <button
+                        onClick={handleIgnoreSuggestion}
+                        className="bg-gray-400 hover:bg-gray-500 text-white text-xs py-1 px-3 rounded-md transition duration-200"
+                        disabled={isLoading}
+                    >
+                        Ignore
+                    </button>
+                </div>
             </div>
-          ))}
-        </div>
-      )}
+        ))}
+    </div>
+)}
 
       {/* --- Calendar Grid Component --- */}
       <div className="mt-8 p-6 bg-white-50 rounded-2xl shadow-inner border border-gray-200">
